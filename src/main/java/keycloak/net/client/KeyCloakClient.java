@@ -15,6 +15,7 @@ import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.HttpStatus;
 import org.apache.http.client.HttpClient;
+import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.DefaultHttpClient;
@@ -36,9 +37,9 @@ public class KeyCloakClient extends AbstractKeyManager {
 	private static final Log log = LogFactory.getLog(KeyCloakClient.class);
 	private KeyManagerConfiguration configuration;
 
-	// We need to maintain a mapping between Consumer Key and id. To get details of a specific client,
-	// we need to call client registration endpoint using id.
-	Map<String, String> nameIdMapping = new HashMap<String, String>();
+	// Mapping between client key key and new registration access token
+	// Registration access token is updated (creates a new one, after adding or retriving, or deleting..) always
+	Map<String, String> clientKeyToRegAccessTokenMap = new HashMap<String, String>();
 
 	public void loadConfiguration(KeyManagerConfiguration keyManagerConfiguration) throws APIManagementException {
 		this.configuration = keyManagerConfiguration;
@@ -53,10 +54,8 @@ public class KeyCloakClient extends AbstractKeyManager {
 		OAuthApplicationInfo applicationInfo = oAuthAppRequest.getOAuthApplicationInfo();
 		log.info(" Creating Application request  : ["+applicationInfo.getClientName()+"] ");
 
-		KeyManagerConfiguration keyManagerConfiguration = getKeyManagerConfiguration();
-
-		String registrationEp = keyManagerConfiguration.getParameter(KeyCloakConstants.CLIENT_REG_ENDPOINT);
-		String registrationAccessToken = keyManagerConfiguration.getParameter(KeyCloakConstants.REGISTRAION_ACCESS_TOKEN);
+		String registrationEp = getKeyManagerConfiguration().getParameter(KeyCloakConstants.CLIENT_REG_ENDPOINT);
+		String registrationAccessToken = getKeyManagerConfiguration().getParameter(KeyCloakConstants.REGISTRAION_ACCESS_TOKEN);
 
 		HttpPost httpPost = new HttpPost(registrationEp.trim());
 		HttpClient httpClient = new DefaultHttpClient();
@@ -80,12 +79,15 @@ public class KeyCloakClient extends AbstractKeyManager {
 			if (HttpStatus.SC_CREATED == responseCode) {
 
 				parsedObject = getParsedObjectByReader(reader);
+
 				if (parsedObject != null) {
+					log.info(" Response from app creation: " + parsedObject.toJSONString());
 					applicationInfo = createOAuthAppfromResponse(parsedObject);
 
 					// We need the id when retrieving a single OAuth Client. So we have to maintain a mapping
 					// between the consumer key and the ID.
-					nameIdMapping.put(applicationInfo.getClientId(), String.valueOf(applicationInfo.getParameter("id")));
+					clientKeyToRegAccessTokenMap.put(applicationInfo.getClientId(),
+							String.valueOf(applicationInfo.getParameter("regAccessToken")));
 
 					return applicationInfo;
 				}
@@ -146,6 +148,11 @@ public class KeyCloakClient extends AbstractKeyManager {
 			info.addParameter("scopes", scopes);
 		}
 
+		// Get registration access token
+		Object regAccessToken = responseMap.get("registrationAccessToken"); // TODO move to constants
+		if (regAccessToken != null) {
+			info.addParameter("regAccessToken", regAccessToken);
+		}
 		return info;
 	}
 
@@ -166,11 +173,60 @@ public class KeyCloakClient extends AbstractKeyManager {
 		return null;
 	}
 
-	public void deleteApplication(String s) throws APIManagementException {
-
+	public void deleteApplication(String applicationName) throws APIManagementException {
+		log.info(" Deleting application [" + applicationName + "] ."); // applicationName is clientId
 	}
 
-	public OAuthApplicationInfo retrieveApplication(String s) throws APIManagementException {
+	public OAuthApplicationInfo retrieveApplication(String applicationName) throws APIManagementException {
+		log.info(" Retrieving application [" + applicationName + "] ."); // applicationName is clientId
+		log.info(" Latest bearer token [ " + clientKeyToRegAccessTokenMap.get(applicationName) + " ].");
+
+		String retrieveEndpoint = getKeyManagerConfiguration().getParameter(KeyCloakConstants.CLIENT_REG_ENDPOINT)+"/"+applicationName;
+		String newRegAccessToken = clientKeyToRegAccessTokenMap.get(applicationName);
+
+		HttpGet htttpGet = new HttpGet(retrieveEndpoint.trim());
+		htttpGet.setHeader(KeyCloakConstants.CONTENT_TYPE, KeyCloakConstants.APPLICATION_JSON_CONTENT_TYPE);
+		htttpGet.setHeader(KeyCloakConstants.AUTHORIZATION, KeyCloakConstants.BEARER + newRegAccessToken);
+
+		HttpClient httpClient = new DefaultHttpClient();
+
+		BufferedReader reader = null;
+		try {
+			HttpResponse response = httpClient.execute(htttpGet);
+			int responseCode = response.getStatusLine().getStatusCode();
+
+			JSONObject parsedObject;
+			HttpEntity entity = response.getEntity();
+			reader = new BufferedReader(new InputStreamReader(entity.getContent(), KeyCloakConstants.UTF_8));
+
+			// If successful 200 will be returned.
+			if (HttpStatus.SC_OK == responseCode) {
+
+				parsedObject = getParsedObjectByReader(reader);
+
+				if (parsedObject != null) {
+					log.info(" Response from app creation: " + parsedObject.toJSONString());
+					OAuthApplicationInfo applicationInfo = createOAuthAppfromResponse(parsedObject);
+
+					// No change in regAccessToken in a retrieval.
+					// No need to update the map
+
+					return applicationInfo;
+				}
+			} else {
+				log.error("Error in app retrieval. Response code is ["+responseCode+"].");
+			}
+		} catch (Exception e) {
+			log.error(" Error in creating application. Reason ["+e.getMessage()+"].");
+		} finally {
+			//close buffer reader.
+			if (reader != null) {
+				IOUtils.closeQuietly(reader);
+			}
+			httpClient.getConnectionManager().shutdown();
+		}
+
+		log.warn(" ***** Will be returning null ******* ");
 		return null;
 	}
 
