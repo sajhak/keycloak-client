@@ -1,6 +1,6 @@
 package keycloak.net.constants;
 
-public class KeyCloakConstants {
+public class KeyCloakConstants  {
 	public static final String CLIENT_REG_ENDPOINT = "RegistrationEndpoint";
 	public static final String CLIENT_NAME = "name";
 
