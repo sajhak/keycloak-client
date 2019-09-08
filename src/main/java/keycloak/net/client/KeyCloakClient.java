@@ -38,7 +38,7 @@ public class KeyCloakClient extends AbstractKeyManager {
 
 	// We need to maintain a mapping between Consumer Key and id. To get details of a specific client,
 	// we need to call client registration endpoint using id.
-	Map<String, Long> nameIdMapping = new HashMap<String, Long>();
+	Map<String, String> nameIdMapping = new HashMap<String, String>();
 
 	public void loadConfiguration(KeyManagerConfiguration keyManagerConfiguration) throws APIManagementException {
 		this.configuration = keyManagerConfiguration;
@@ -85,8 +85,7 @@ public class KeyCloakClient extends AbstractKeyManager {
 
 					// We need the id when retrieving a single OAuth Client. So we have to maintain a mapping
 					// between the consumer key and the ID.
-					nameIdMapping.put(applicationInfo.getClientId(), (Long) applicationInfo.getParameter
-							("id"));
+					nameIdMapping.put(applicationInfo.getClientId(), String.valueOf(applicationInfo.getParameter("id")));
 
 					return applicationInfo;
 				}
