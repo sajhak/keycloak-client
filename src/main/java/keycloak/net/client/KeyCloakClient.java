@@ -15,6 +15,7 @@ import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.HttpStatus;
 import org.apache.http.client.HttpClient;
+import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
@@ -169,12 +170,51 @@ public class KeyCloakClient extends AbstractKeyManager {
 		return jsonString;
 	}
 
+	// TODO implement
 	public OAuthApplicationInfo updateApplication(OAuthAppRequest oAuthAppRequest) throws APIManagementException {
 		return null;
 	}
 
 	public void deleteApplication(String applicationName) throws APIManagementException {
 		log.info(" Deleting application [" + applicationName + "] ."); // applicationName is clientId
+		log.info(" Latest bearer token in delete [ " + clientKeyToRegAccessTokenMap.get(applicationName) + " ].");
+
+		String retrieveEndpoint = getKeyManagerConfiguration().getParameter(KeyCloakConstants.CLIENT_REG_ENDPOINT)+"/"+applicationName;
+		String newRegAccessToken = clientKeyToRegAccessTokenMap.get(applicationName);
+
+		HttpDelete httpDelete = new HttpDelete(retrieveEndpoint.trim());
+		httpDelete.setHeader(KeyCloakConstants.CONTENT_TYPE, KeyCloakConstants.APPLICATION_JSON_CONTENT_TYPE);
+		httpDelete.setHeader(KeyCloakConstants.AUTHORIZATION, KeyCloakConstants.BEARER + newRegAccessToken);
+
+		HttpClient httpClient = new DefaultHttpClient();
+
+		BufferedReader reader = null;
+		try {
+			HttpResponse response = httpClient.execute(httpDelete);
+			int responseCode = response.getStatusLine().getStatusCode();
+
+			HttpEntity entity = response.getEntity();
+			reader = new BufferedReader(new InputStreamReader(entity.getContent(), KeyCloakConstants.UTF_8));
+
+			// If successful 204 will be returned.
+			if (HttpStatus.SC_NO_CONTENT == responseCode) {
+
+				log.info(" Response from app deletion ");
+				// Remove key from map
+				clientKeyToRegAccessTokenMap.remove(applicationName);
+
+			} else {
+				log.error("Error in app deletion. Response code is ["+responseCode+"].");
+			}
+		} catch (Exception e) {
+			log.error(" Error in deleting application. Reason ["+e.getMessage()+"].");
+		} finally {
+			//close buffer reader.
+			if (reader != null) {
+				IOUtils.closeQuietly(reader);
+			}
+			httpClient.getConnectionManager().shutdown();
+		}
 	}
 
 	public OAuthApplicationInfo retrieveApplication(String applicationName) throws APIManagementException {
@@ -230,10 +270,12 @@ public class KeyCloakClient extends AbstractKeyManager {
 		return null;
 	}
 
+	// TODO implement
 	public AccessTokenInfo getNewApplicationAccessToken(AccessTokenRequest accessTokenRequest) throws APIManagementException {
 		return null;
 	}
 
+	// TODO implement
 	public AccessTokenInfo getTokenMetaData(String s) throws APIManagementException {
 		return null;
 	}
@@ -243,13 +285,14 @@ public class KeyCloakClient extends AbstractKeyManager {
 		return null;
 	}
 
+	// TODO implement
 	public OAuthApplicationInfo mapOAuthApplication(OAuthAppRequest oAuthAppRequest) throws APIManagementException {
 		return null;
 	}
 
 
 	public boolean registerNewResource(API api, Map map) throws APIManagementException {
-		return false;
+		return true;
 	}
 
 	public Map getResourceByApiId(String s) throws APIManagementException {
@@ -268,14 +311,17 @@ public class KeyCloakClient extends AbstractKeyManager {
 
 	}
 
+	// TODO implement
 	public Set<String> getActiveTokensByConsumerKey(String s) throws APIManagementException {
 		return null;
 	}
 
+	// TODO implement
 	public AccessTokenInfo getAccessTokenByConsumerKey(String s) throws APIManagementException {
 		return null;
 	}
 
+	// TODO implement
 	public Map<String, Set<Scope>> getScopesForAPIS(String s) throws APIManagementException {
 		return null;
 	}
