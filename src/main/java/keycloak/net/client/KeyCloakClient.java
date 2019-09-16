@@ -1,46 +1,58 @@
 
 package keycloak.net.client;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
 import keycloak.net.constants.KeyCloakConstants;
+import org.apache.axis2.util.URL;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.HttpStatus;
+import org.apache.http.NameValuePair;
+import org.apache.http.client.ClientProtocolException;
 import org.apache.http.client.HttpClient;
+import org.apache.http.client.entity.UrlEncodedFormEntity;
 import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.DefaultHttpClient;
+import org.apache.http.message.BasicNameValuePair;
+import org.apache.http.util.EntityUtils;
+import org.apache.oltu.oauth2.common.OAuth;
+import org.json.JSONException;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
 import org.wso2.carbon.apimgt.api.APIManagementException;
-import org.wso2.carbon.apimgt.api.model.API;
-import org.wso2.carbon.apimgt.api.model.AccessTokenInfo;
-import org.wso2.carbon.apimgt.api.model.AccessTokenRequest;
-import org.wso2.carbon.apimgt.api.model.KeyManagerConfiguration;
-import org.wso2.carbon.apimgt.api.model.OAuthAppRequest;
-import org.wso2.carbon.apimgt.api.model.OAuthApplicationInfo;
-import org.wso2.carbon.apimgt.api.model.Scope;
+import org.wso2.carbon.apimgt.api.model.*;
 import org.wso2.carbon.apimgt.impl.AbstractKeyManager;
+import org.wso2.carbon.apimgt.impl.dao.ApiMgtDAO;
+import org.wso2.carbon.apimgt.impl.utils.APIUtil;
+import org.wso2.carbon.identity.oauth.common.OAuthConstants;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.UnsupportedEncodingException;
+import java.util.*;
 
 public class KeyCloakClient extends AbstractKeyManager {
 
 	private static final Log log = LogFactory.getLog(KeyCloakClient.class);
 	private KeyManagerConfiguration configuration;
 
+	private static final String OAUTH_RESPONSE_ACCESSTOKEN = "access_token";
+	private static final String OAUTH_RESPONSE_EXPIRY_TIME = "expires_in";
+	private static final String GRANT_TYPE_VALUE = "client_credentials";
+	private static final String GRANT_TYPE_PARAM_VALIDITY = "validity_period";
+	private static final String CONFIG_ELEM_OAUTH = "OAuth";
+
 	// Mapping between client key key and new registration access token
 	// Registration access token is updated (creates a new one, after adding or retriving, or deleting..) always
 	Map<String, String> clientKeyToRegAccessTokenMap = new HashMap<String, String>();
+
 
 	public void loadConfiguration(KeyManagerConfiguration keyManagerConfiguration) throws APIManagementException {
 		this.configuration = keyManagerConfiguration;
@@ -87,6 +99,8 @@ public class KeyCloakClient extends AbstractKeyManager {
 
 					// We need the id when retrieving a single OAuth Client. So we have to maintain a mapping
 					// between the consumer key and the ID.
+
+					// Adding to db map
 					clientKeyToRegAccessTokenMap.put(applicationInfo.getClientId(),
 							String.valueOf(applicationInfo.getParameter("regAccessToken")));
 
@@ -163,6 +177,8 @@ public class KeyCloakClient extends AbstractKeyManager {
 		paramMap.put("clientId", applicationInfo.getClientName()); // TODO *** clientid or client name ??
 		paramMap.put("protocol", "openid-connect");
 		paramMap.put("rootUrl", applicationInfo.getCallBackURL());
+		paramMap.put("serviceAccountsEnabled", "true");
+		paramMap.put("publicClient", "false");
 
 		String jsonString = JSONObject.toJSONString(paramMap);
 		log.info(" JSON body constructed : " + jsonString);
@@ -176,6 +192,8 @@ public class KeyCloakClient extends AbstractKeyManager {
 	}
 
 	public void deleteApplication(String applicationName) throws APIManagementException {
+
+
 		log.info(" Deleting application [" + applicationName + "] ."); // applicationName is clientId
 		log.info(" Latest bearer token in delete [ " + clientKeyToRegAccessTokenMap.get(applicationName) + " ].");
 
@@ -218,6 +236,7 @@ public class KeyCloakClient extends AbstractKeyManager {
 	}
 
 	public OAuthApplicationInfo retrieveApplication(String applicationName) throws APIManagementException {
+
 		log.info(" Retrieving application [" + applicationName + "] ."); // applicationName is clientId
 		log.info(" Latest bearer token [ " + clientKeyToRegAccessTokenMap.get(applicationName) + " ].");
 
@@ -270,10 +289,111 @@ public class KeyCloakClient extends AbstractKeyManager {
 		return null;
 	}
 
-	// TODO implement
+
 	public AccessTokenInfo getNewApplicationAccessToken(AccessTokenRequest accessTokenRequest) throws APIManagementException {
-		return null;
-	}
+		String newAccessToken;
+		long validityPeriod;
+		AccessTokenInfo tokenInfo = null;
+
+		if (accessTokenRequest == null) {
+			log.warn("No information available to generate Token.");
+			return null;
+		}
+
+		String tokenEndpoint = getKeyManagerConfiguration().getParameter(KeyCloakConstants.TOKEN_URL);
+		//To revoke tokens we should call revoke API deployed in API gateway.
+		String revokeEndpoint = getKeyManagerConfiguration().getParameter(KeyCloakConstants.REVOKE_URL);
+		URL keyMgtURL = new URL(tokenEndpoint);
+		int keyMgtPort = keyMgtURL.getPort();
+		String keyMgtProtocol = keyMgtURL.getProtocol();
+
+		// Call the /revoke only if there's a token to be revoked.
+		try {
+			if (accessTokenRequest.getTokenToRevoke() != null && !accessTokenRequest.getTokenToRevoke().isEmpty()) {
+				URL revokeEndpointURL = new URL(revokeEndpoint);
+				String revokeEndpointProtocol = revokeEndpointURL.getProtocol();
+				int revokeEndpointPort = revokeEndpointURL.getPort();
+
+				HttpPost httpRevokePost = new HttpPost(revokeEndpoint);
+
+				// Request parameters.
+				List<NameValuePair> revokeParams = new ArrayList<NameValuePair>(3);
+				revokeParams.add(new BasicNameValuePair(OAuth.OAUTH_CLIENT_ID, accessTokenRequest.getClientId()));
+				revokeParams.add(new BasicNameValuePair(OAuth.OAUTH_CLIENT_SECRET, accessTokenRequest.getClientSecret()));
+				revokeParams.add(new BasicNameValuePair("token", accessTokenRequest.getTokenToRevoke()));
+
+
+				//Revoke the Old Access Token
+				httpRevokePost.setEntity(new UrlEncodedFormEntity(revokeParams, "UTF-8"));
+				int statusCode;
+				try {
+					HttpResponse revokeResponse = executeHTTPrequest(revokeEndpointPort, revokeEndpointProtocol,
+							httpRevokePost);
+					statusCode = revokeResponse.getStatusLine().getStatusCode();
+				} finally {
+
+				}
+
+				if (statusCode != 200) {
+					throw new APIManagementException("Token revoke failed : HTTP error code : " + statusCode);
+				} else {
+					if (log.isDebugEnabled()) {
+						log.debug("Successfully submitted revoke request for old application token. HTTP status : 200");
+					}
+				}
+			}
+
+			// When validity time set to a negative value, a token is considered never to expire.
+			if (accessTokenRequest.getValidityPeriod() == OAuthConstants.UNASSIGNED_VALIDITY_PERIOD) {
+				// Setting a different -ve value if the set value is -1 (-1 will be ignored by TokenValidator)
+				accessTokenRequest.setValidityPeriod(-2L);
+			}
+
+			//Generate New Access Token
+			HttpPost httpTokpost = new HttpPost(tokenEndpoint);
+			List<NameValuePair> tokParams = new ArrayList<NameValuePair>();
+			tokParams.add(new BasicNameValuePair(OAuth.OAUTH_GRANT_TYPE, GRANT_TYPE_VALUE));
+			tokParams.add(new BasicNameValuePair(GRANT_TYPE_PARAM_VALIDITY,
+					Long.toString(accessTokenRequest.getValidityPeriod())));
+			tokParams.add(new BasicNameValuePair(OAuth.OAUTH_CLIENT_ID, accessTokenRequest.getClientId()));
+			tokParams.add(new BasicNameValuePair(OAuth.OAUTH_CLIENT_SECRET, accessTokenRequest.getClientSecret()));
+
+			String scopes = String.join(" ", accessTokenRequest.getScope());
+			tokParams.add(new BasicNameValuePair("scope", scopes));
+
+			httpTokpost.setEntity(new UrlEncodedFormEntity(tokParams, "UTF-8"));
+			try {
+				HttpResponse tokResponse = executeHTTPrequest(keyMgtPort, keyMgtProtocol, httpTokpost);
+				HttpEntity tokEntity = tokResponse.getEntity();
+
+				if (tokResponse.getStatusLine().getStatusCode() != 200) {
+					throw new APIManagementException("Error occurred while calling token endpoint: HTTP error code : " +
+							tokResponse.getStatusLine().getStatusCode());
+				} else {
+					tokenInfo = new AccessTokenInfo();
+					String responseStr = EntityUtils.toString(tokEntity);
+					org.json.JSONObject obj = new org.json.JSONObject(responseStr);
+					newAccessToken = obj.get(OAUTH_RESPONSE_ACCESSTOKEN).toString();
+					validityPeriod = Long.parseLong(obj.get(OAUTH_RESPONSE_EXPIRY_TIME).toString());
+					if (obj.has("scope")) {
+						tokenInfo.setScope(((String) obj.get("scope")).split(" "));
+					}
+					tokenInfo.setAccessToken(newAccessToken);
+					tokenInfo.setValidityPeriod(validityPeriod);
+				}
+			} finally {
+			}
+		} catch (ClientProtocolException e) {
+			handleException("Error while creating token - Invalid protocol used", e);
+		} catch (UnsupportedEncodingException e) {
+			handleException("Error while preparing request for token/revoke APIs", e);
+		} catch (IOException e) {
+			handleException("Error while creating tokens - " + e.getMessage(), e);
+		} catch (JSONException e) {
+			handleException("Error while parsing response from token api", e);
+		}
+
+		return tokenInfo;	}
 
 	// TODO implement
 	public AccessTokenInfo getTokenMetaData(String s) throws APIManagementException {
@@ -312,17 +432,42 @@ public class KeyCloakClient extends AbstractKeyManager {
 	}
 
 	// TODO implement
-	public Set<String> getActiveTokensByConsumerKey(String s) throws APIManagementException {
-		return null;
-	}
+	public Set<String> getActiveTokensByConsumerKey(String consumerKey) throws APIManagementException {
+		ApiMgtDAO apiMgtDAO = ApiMgtDAO.getInstance();
+		return apiMgtDAO.getActiveTokensOfConsumerKey(consumerKey);	}
 
 	// TODO implement
-	public AccessTokenInfo getAccessTokenByConsumerKey(String s) throws APIManagementException {
-		return null;
+	public AccessTokenInfo getAccessTokenByConsumerKey(String consumerKey) throws APIManagementException {
+        ApiMgtDAO apimgtDao = ApiMgtDAO.getInstance();
+        AccessTokenInfo accessTokenInfo = new AccessTokenInfo();
+
+        try {
+            APIKey apiKey = apimgtDao.getAccessTokenInfoByConsumerKey(consumerKey);
+            if (apiKey != null) {
+                log.info(" Retrieved apiKey Not null ****** " + apiKey.getAccessToken());
+                accessTokenInfo.setConsumerKey(consumerKey);
+                accessTokenInfo.setAccessToken(apiKey.getAccessToken());
+                accessTokenInfo.setConsumerSecret(apiKey.getConsumerSecret());
+                accessTokenInfo.setValidityPeriod(apiKey.getValidityPeriod());
+            } else {
+                log.info(" ***** apiKey retrieved is NULL ******** ");
+                accessTokenInfo.setAccessToken("");
+                //set default validity period
+                accessTokenInfo.setValidityPeriod(3600);
+            }
+        } catch (Exception e) {
+            log.error( " Error in getting access token info for consumer key ["+consumerKey+"] ");
+        }
+        return accessTokenInfo;
 	}
 
 	// TODO implement
 	public Map<String, Set<Scope>> getScopesForAPIS(String s) throws APIManagementException {
 		return null;
+	}
+
+	private HttpResponse executeHTTPrequest(int port, String protocol, HttpPost httpPost) throws IOException {
+		HttpClient httpClient = APIUtil.getHttpClient(port, protocol);
+		return httpClient.execute(httpPost);
 	}
 }

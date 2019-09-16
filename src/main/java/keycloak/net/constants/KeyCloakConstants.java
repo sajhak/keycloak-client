@@ -15,6 +15,9 @@ public class KeyCloakConstants  {
 	public static final String APPLICATION_JSON_CONTENT_TYPE = "application/json";
 	public static final String CONTENT_TYPE = "Content-Type";
 	public static final String SCOPES = "scopes";
+	public static final String TOKEN_URL = "TokenURL";
+	public static final String REVOKE_URL = "RevokeURL";
+
 	public static final String URL_ENCODED_CONTENT_TYPE = "application/x-www-form-urlencoded";
 	public static final String CLIENT_SCOPE = "scopes";
 	public static final String CLIENT_CONTACT_NAME = "contactName";
