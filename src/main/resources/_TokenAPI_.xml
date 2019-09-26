@@ -1,0 +1,33 @@
+<api xmlns="http://ws.apache.org/ns/synapse" name="_WSO2AMTokenAPI_" context="/token">
+    <resource methods="POST" url-mapping="/*" faultSequence="_token_fault_">
+        <inSequence>
+	    <log level="custom">
+		<property name="insq" value="Inside TOKEN_API insequence..." />
+	    </log>
+            <property name="uri.var.portnum" expression="get-property('keyManager.port')"/>
+	    <property name="uri.var.hostname" expression="get-property('keyManager.hostname')"/>
+<log level="full" />
+            <send>
+                <endpoint>
+                     <http uri-template="http://localhost:8180/auth/realms/dev/protocol/openid-connect/token">
+                        <timeout>
+                            <duration>60000</duration>
+                            <responseAction>fault</responseAction>
+                        </timeout>
+                    </http>
+                </endpoint>
+            </send>
+        </inSequence>
+        <outSequence>
+		 <log level="custom">
+                	<property name="outsq" value="Inside TOKEN_API outSeq..." />
+            	</log>
+		<log level="full" />
+            <send/>
+        </outSequence>
+    </resource>
+    <handlers>
+        <handler class="org.wso2.carbon.apimgt.gateway.handlers.ext.APIManagerCacheExtensionHandler"/>
+        <handler class="org.wso2.carbon.apimgt.gateway.handlers.common.SynapsePropertiesHandler"/>
+    </handlers>
+</api>
