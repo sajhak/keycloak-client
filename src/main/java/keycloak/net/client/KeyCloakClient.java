@@ -45,10 +45,9 @@ public class KeyCloakClient extends AbstractKeyManager {
     private static final String OAUTH_RESPONSE_EXPIRY_TIME = "expires_in";
     private static final String GRANT_TYPE_VALUE = "client_credentials";
     private static final String GRANT_TYPE_PARAM_VALIDITY = "validity_period";
-    private static final String CONFIG_ELEM_OAUTH = "OAuth";
     // Mapping between client key key and new registration access token
     // Registration access token is updated (creates a new one, after adding or retriving, or deleting..) always
-    Map<String, ClientDTO> clientKeyToRegAccessTokenMap = new HashMap<String, ClientDTO>();
+    private Map<String, ClientDTO> clientKeyToRegAccessTokenMap = new HashMap<String, ClientDTO>();
     private KeyManagerConfiguration configuration;
 
     public void loadConfiguration(KeyManagerConfiguration keyManagerConfiguration) throws APIManagementException {
@@ -143,8 +142,18 @@ public class KeyCloakClient extends AbstractKeyManager {
         Object clientSecret = responseMap.get(KeyCloakConstants.CLIENT_SECRET);
         info.setClientSecret((String) clientSecret);
 
+        // In @AbstractApolicationRegistrationWorkflowExecutor checks for this string and invoke keymanager
+        // APIConstants.GRANT_TYPE_CLIENT_CREDENTIALS => "client_credentials"
+        // if (oAuthApplication.getJsonString().contains(APIConstants.GRANT_TYPE_CLIENT_CREDENTIALS)) { }
+        // OR, json string is created from parameters.
+        info.setJsonString("{\"client_credentials\":\"client_credentials\"}");
+
+        // Adding grant_types values, this is checked in APIConsumerImpl getApplicationKey() method
+        info.addParameter("grant_types", "client_credentials");
+
         Object id = responseMap.get("id");
         info.addParameter("id", id);
+
 
         Object contactName = responseMap.get(KeyCloakConstants.CLIENT_CONTACT_NAME);
         if (contactName != null) {
@@ -172,7 +181,7 @@ public class KeyCloakClient extends AbstractKeyManager {
     private String createMessageBody(OAuthApplicationInfo applicationInfo) {
         Map<String, Object> paramMap = new HashMap<String, Object>();
         paramMap.put("enabled", "true");
-        paramMap.put("clientId", applicationInfo.getClientName()); // TODO *** clientid or client name ??
+        paramMap.put("clientId", applicationInfo.getClientName());
         paramMap.put("protocol", "openid-connect");
         paramMap.put("rootUrl", applicationInfo.getCallBackURL());
         paramMap.put("serviceAccountsEnabled", "true");
@@ -212,7 +221,7 @@ public class KeyCloakClient extends AbstractKeyManager {
             HttpEntity entity = response.getEntity();
             reader = new BufferedReader(new InputStreamReader(entity.getContent(), KeyCloakConstants.UTF_8));
 
-            // If successful 204 will be returned.
+            // If successful 204 will be returned. TODO check code
             if (HttpStatus.SC_NO_CONTENT == responseCode) {
 
                 log.info(" Response from app deletion ");
@@ -262,7 +271,7 @@ public class KeyCloakClient extends AbstractKeyManager {
                 parsedObject = getParsedObjectByReader(reader);
 
                 if (parsedObject != null) {
-                    log.info(" Response from app creation: " + parsedObject.toJSONString());
+                    log.info(" Response from app retrieval: " + parsedObject.toJSONString());
                     OAuthApplicationInfo applicationInfo = createOAuthAppfromResponse(parsedObject);
 
                     // No change in regAccessToken in a retrieval.
@@ -356,7 +365,8 @@ public class KeyCloakClient extends AbstractKeyManager {
             tokParams.add(new BasicNameValuePair(OAuth.OAUTH_CLIENT_ID, accessTokenRequest.getClientId()));
             tokParams.add(new BasicNameValuePair(OAuth.OAUTH_CLIENT_SECRET, accessTokenRequest.getClientSecret()));
 
-            String scopes = String.join(" ", accessTokenRequest.getScope());
+            //String scopes = String.join(" ", accessTokenRequest.getScope());
+            String scopes = " ";
             tokParams.add(new BasicNameValuePair("scope", scopes));
 
             httpTokpost.setEntity(new UrlEncodedFormEntity(tokParams, "UTF-8"));
@@ -429,7 +439,7 @@ public class KeyCloakClient extends AbstractKeyManager {
                 parsedObject = getParsedObjectByReader(reader);
 
                 if (parsedObject != null) {
-                    log.info(" Response from app creation: " + parsedObject.toJSONString());
+                    log.info(" Response from token metadata retrieval: " + parsedObject.toJSONString());
                     return createAccessTokenInfoFromResponse(parsedObject);
                 }
             } else {
@@ -500,7 +510,7 @@ public class KeyCloakClient extends AbstractKeyManager {
     }
 
     public boolean updateRegisteredResource(API api, Map map) throws APIManagementException {
-        return false;
+        return true;
     }
 
     public void deleteRegisteredResourceByAPIId(String s) throws APIManagementException {
