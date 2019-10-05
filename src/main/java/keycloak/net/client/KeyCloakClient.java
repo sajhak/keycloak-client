@@ -16,6 +16,7 @@ import org.apache.http.client.entity.UrlEncodedFormEntity;
 import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpPut;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.DefaultHttpClient;
 import org.apache.http.message.BasicNameValuePair;
@@ -142,11 +143,13 @@ public class KeyCloakClient extends AbstractKeyManager {
         Object clientSecret = responseMap.get(KeyCloakConstants.CLIENT_SECRET);
         info.setClientSecret((String) clientSecret);
 
+        info.setCallBackURL((String) responseMap.get("rootUrl"));
+
         // In @AbstractApolicationRegistrationWorkflowExecutor checks for this string and invoke keymanager
         // APIConstants.GRANT_TYPE_CLIENT_CREDENTIALS => "client_credentials"
         // if (oAuthApplication.getJsonString().contains(APIConstants.GRANT_TYPE_CLIENT_CREDENTIALS)) { }
         // OR, json string is created from parameters.
-        info.setJsonString("{\"client_credentials\":\"client_credentials\"}");
+        info.setJsonString("{\"grant_types\":\"client_credentials\"}");
 
         // Adding grant_types values, this is checked in APIConsumerImpl getApplicationKey() method
         info.addParameter("grant_types", "client_credentials");
@@ -186,15 +189,78 @@ public class KeyCloakClient extends AbstractKeyManager {
         paramMap.put("rootUrl", applicationInfo.getCallBackURL());
         paramMap.put("serviceAccountsEnabled", "true");
         paramMap.put("publicClient", "false");
-
+        
         String jsonString = JSONObject.toJSONString(paramMap);
         log.info(" JSON body constructed : " + jsonString);
 
         return jsonString;
     }
 
-    // TODO implement
+    /**
+     *
+     * Updating application.
+     *
+     */
     public OAuthApplicationInfo updateApplication(OAuthAppRequest oAuthAppRequest) throws APIManagementException {
+
+        OAuthApplicationInfo applicationInfo = oAuthAppRequest.getOAuthApplicationInfo();
+        String applicationName = applicationInfo.getClientName();
+
+        log.info(" Updating Application request  : [" + applicationName + "] ");
+        log.info(" Latest bearer token in delete [ " + clientKeyToRegAccessTokenMap.get(applicationName).getRegAccessToken() + " ].");
+
+        String clientRegEndpoint = getKeyManagerConfiguration().getParameter(KeyCloakConstants.CLIENT_REG_ENDPOINT) + "/" + applicationName;
+        String newRegAccessToken = clientKeyToRegAccessTokenMap.get(applicationName).getRegAccessToken();
+
+        HttpPut httpPut = new HttpPut(clientRegEndpoint.trim());
+        HttpClient httpClient = new DefaultHttpClient();
+
+        String messageBody = createMessageBody(applicationInfo);
+
+        httpPut.setEntity(new StringEntity(messageBody, KeyCloakConstants.UTF_8));
+        httpPut.setHeader(KeyCloakConstants.CONTENT_TYPE, KeyCloakConstants.APPLICATION_JSON_CONTENT_TYPE);
+        httpPut.setHeader(KeyCloakConstants.AUTHORIZATION, KeyCloakConstants.BEARER + newRegAccessToken);
+
+        BufferedReader reader = null;
+        try {
+            HttpResponse response = httpClient.execute(httpPut);
+            int responseCode = response.getStatusLine().getStatusCode();
+
+            JSONObject parsedObject;
+            HttpEntity entity = response.getEntity();
+            reader = new BufferedReader(new InputStreamReader(entity.getContent(), KeyCloakConstants.UTF_8));
+
+            // If successful a 200 will be returned.
+            if (HttpStatus.SC_OK == responseCode) {
+
+                parsedObject = getParsedObjectByReader(reader);
+
+                if (parsedObject != null) {
+                    log.info(" Response from app update: " + parsedObject.toJSONString());
+                    applicationInfo = createOAuthAppfromResponse(parsedObject);
+
+                    // We need the id when retrieving a single OAuth Client. So we have to maintain a mapping
+                    // between the consumer key and the ID.
+
+                    // Adding to db map
+                    clientKeyToRegAccessTokenMap.put(applicationInfo.getClientId(),
+                            new ClientDTO(applicationInfo.getClientId(), applicationInfo.getClientSecret(),
+                                    String.valueOf(applicationInfo.getParameter("regAccessToken"))));
+
+                    return applicationInfo;
+                }
+            } else {
+                log.error("Error in app update. Response code is [" + responseCode + "].");
+            }
+        } catch (Exception e) {
+            log.error(" Error in updating application. Reason [" + e.getMessage() + "].");
+        } finally {
+            //close buffer reader.
+            if (reader != null) {
+                IOUtils.closeQuietly(reader);
+            }
+            httpClient.getConnectionManager().shutdown();
+        }
         return null;
     }
 
@@ -202,7 +268,7 @@ public class KeyCloakClient extends AbstractKeyManager {
 
 
         log.info(" Deleting application [" + applicationName + "] ."); // applicationName is clientId
-        log.info(" Latest bearer token in delete [ " + clientKeyToRegAccessTokenMap.get(applicationName) + " ].");
+        log.info(" Latest bearer token in delete [ " + clientKeyToRegAccessTokenMap.get(applicationName).getRegAccessToken() + " ].");
 
         String retrieveEndpoint = getKeyManagerConfiguration().getParameter(KeyCloakConstants.CLIENT_REG_ENDPOINT) + "/" + applicationName;
         String newRegAccessToken = clientKeyToRegAccessTokenMap.get(applicationName).getRegAccessToken();
@@ -221,7 +287,7 @@ public class KeyCloakClient extends AbstractKeyManager {
             HttpEntity entity = response.getEntity();
             reader = new BufferedReader(new InputStreamReader(entity.getContent(), KeyCloakConstants.UTF_8));
 
-            // If successful 204 will be returned. TODO check code
+            // If successful 204 will be returned.
             if (HttpStatus.SC_NO_CONTENT == responseCode) {
 
                 log.info(" Response from app deletion ");
@@ -484,7 +550,6 @@ public class KeyCloakClient extends AbstractKeyManager {
         accessTokenInfo.setValidityPeriod(expiryTime-currentTime);
         accessTokenInfo.setIssuedTime(issueTime);
 
-        // TODO scopes
         //accessTokenInfo.setScope(null);
 
         return accessTokenInfo;
@@ -495,9 +560,11 @@ public class KeyCloakClient extends AbstractKeyManager {
         return null;
     }
 
-    // TODO implement
+    /**
+     * This will be invoked when mapping existing OAuth Clients with Application in API Manager.
+     */
     public OAuthApplicationInfo mapOAuthApplication(OAuthAppRequest oAuthAppRequest) throws APIManagementException {
-        return null;
+        return oAuthAppRequest.getOAuthApplicationInfo();
     }
 
 
@@ -521,21 +588,22 @@ public class KeyCloakClient extends AbstractKeyManager {
 
     }
 
-    // FIXME - wrong impl. Should not call DB. Tokens are not stored in db
     public Set<String> getActiveTokensByConsumerKey(String consumerKey) throws APIManagementException {
-        //return new HashSet<String>();
+        // This is to get the access token by providing consumer key
+        // This is not supproted in keycloak.
+        // Therefore returning null by default
+        // This is needed for API store's functionality
         return null;
     }
 
-    // FIXME - wrong impl. Should not call DB. Tokens are not stored in db
     public AccessTokenInfo getAccessTokenByConsumerKey(String consumerKey) throws APIManagementException {
-//		AccessTokenInfo accessTokenInfo = new AccessTokenInfo();
-//		accessTokenInfo.setAccessToken("");
-//		return accessTokenInfo;
+        // This is to get the access token by providing consumer key
+        // This is not supproted in keycloak.
+        // Therefore returning null by default
+        // This is needed for API store's functionality
         return null;
     }
 
-    // TODO implement
     public Map<String, Set<Scope>> getScopesForAPIS(String s) throws APIManagementException {
         return null;
     }
